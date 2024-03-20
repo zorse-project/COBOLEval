@@ -109,9 +109,9 @@ def exec(name, path, call_path) -> bool:
     # Once you have read this disclaimer and taken appropriate precautions,
     # uncomment the following lines and proceed at your own risk:
 
-    # if not cmd(f"./call_{name}"):
-    #     logger.warning(f"Runtime error for {path}")
-    #     return False
+    if not cmd(f"./call_{name}"):
+         logger.warning(f"Runtime error for {path}")
+         return False
 
     return True
 
@@ -152,6 +152,7 @@ def check_correctness(problem: Dict, completion: str, base_path: str) -> Dict:
 
                 with open(result_path) as f:
                     result = f.readlines()
+                    print(results)
 
                 if result:
                     type_ = test["result"]["type_"]
