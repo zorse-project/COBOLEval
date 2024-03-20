@@ -152,7 +152,6 @@ def check_correctness(problem: Dict, completion: str, base_path: str) -> Dict:
 
                 with open(result_path) as f:
                     result = f.readlines()
-                    print(results)
 
                 if result:
                     type_ = test["result"]["type_"]
