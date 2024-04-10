@@ -10,6 +10,11 @@ class Model:
     name: str
     temp: float = 0.0
     samples_per_task: int = 1
+    tokenizer: str = None
+    prefix_token: str = None
+    suffix_token: str = None
+    middle_token: str = None
+    eos_token: str = None
 
 
 def cmd(cmd: str) -> bool:

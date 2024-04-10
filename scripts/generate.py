@@ -11,6 +11,7 @@ from marko.block import FencedCode
 from tenacity import retry, stop_after_attempt, wait_random_exponential
 from utils import Model, cleanup_dylib, cmd
 
+
 dotenv.load_dotenv()
 
 
@@ -224,6 +225,97 @@ class JsonProgram(LLMGenerator):
 
     def solve(self, eval, sample_id=0):
         return self.completions[sample_id][eval["id"]]["completion"]
+    
+@memory.cache
+def hf_complete(prompt, model, tokenizer, max_length=1024, eos_token=None) -> str:
+    inputs = tokenizer.encode(prompt, return_tensors="pt", add_special_tokens=False).to("cuda")
+    outputs = model.generate(inputs, max_new_tokens=max_length, use_cache=True, do_sample=False, repetition_penalty=1.1)
+    text_output = tokenizer.decode(outputs[0], skip_special_tokens=False)[len(prompt):]
+    if eos_token and text_output.endswith(eos_token):
+        text_output = text_output[: -len(eos_token)]
+    return text_output
+    
+
+class HuggingfaceComplete(LLMGenerator):
+    """
+    Completes WORKING-STORAGE then PROCEDURE DIVISION with local Huggingface model
+    """
+
+    def __init__(self, model: Model):
+        from transformers import AutoModelForCausalLM, AutoTokenizer
+        import torch
+        super().__init__(model)
+        self.hf_model = AutoModelForCausalLM.from_pretrained(model.name, device_map="cuda", torch_dtype=torch.bfloat16, cache_dir="/runs/cache")
+        if model.tokenizer:
+            self.hf_tokenizer = AutoTokenizer.from_pretrained(model.tokenizer)
+        else:
+            self.hf_tokenizer = AutoTokenizer.from_pretrained(model.name)
+
+    def solve(self, eval, sample_id=0):
+        sol = hf_complete(eval["prompt"], self.hf_model, self.hf_tokenizer, eos_token=self.model.eos_token)
+        program = self.construct(eval["prompt"], sol)
+        return program
+
+    def construct(self, prompt: str, sol: str):
+        if sol.strip().startswith("WORKING-STORAGE SECTION."):
+            sol = sol.replace("WORKING-STORAGE SECTION.", "")
+
+        prog = f"{prompt}\n{sol}"
+        return swap_sections(prog)
+
+
+class HuggingfaceInfill(LLMGenerator):
+    """
+    Infills WORKING-STORAGE SECTION then completes PROCEDURE DIVISION with local Huggingface model
+
+    Infilling strategy described here: https://bloop.ai/blog/evaluating-llms-on-cobol
+    """
+
+    def __init__(self, model: Model):
+        from transformers import AutoModelForCausalLM, AutoTokenizer
+        import torch
+        super().__init__(model)
+        self.hf_model = AutoModelForCausalLM.from_pretrained(model.name, device_map="cuda", torch_dtype=torch.bfloat16, cache_dir="/runs/cache")
+        if model.tokenizer:
+            self.hf_tokenizer = AutoTokenizer.from_pretrained(model.tokenizer)
+        else:
+            self.hf_tokenizer = AutoTokenizer.from_pretrained(model.name)
+        self.prefix_token = model.prefix_token
+        self.middle_token = model.middle_token
+        self.suffix_token = model.suffix_token
+
+    def solve(self, eval, sample_id=0):
+        prefix, suffix = self.get_prefix_suffix(eval["prompt"])
+        prompt = f"{self.prefix_token}{prefix}{self.suffix_token}{suffix}"
+        sol = hf_complete(prompt, self.hf_model, self.hf_tokenizer, eos_token=self.model.eos_token)
+        
+        try:
+            procedure, working_storage = sol.split(self.middle_token)
+        except:
+            procedure, working_storage = sol, "       WORKING-STORAGE SECTION.\n\n"
+
+        program = f"{prefix}{working_storage}{suffix}{procedure}"
+        return program
+
+    def get_prefix_suffix(self, src: str):
+        """
+        Split the prompt into prefix and suffix strings
+        """
+        lines = src.split("\n")
+        for i, line in enumerate(lines):
+            if line.strip().startswith("DATA DIVISION."):
+                data_division = i
+            if line.strip().startswith("LINKAGE SECTION."):
+                linkage_section = i
+            if line.strip().startswith(
+                "* Complete the WORKING-STORAGE SECTION and the PROCEDURE DIVISION"
+            ):
+                complete = i
+
+        prefix = "\n".join(lines[: data_division + 1]) + "\n"
+        store = "      * Store the result in the RESULT variable and mark the end of your program with END PROGRAM\n"
+        suffix = "\n".join(lines[linkage_section:complete] + [store])
+        return prefix, suffix
 
 
 if __name__ == "__main__":
