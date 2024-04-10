@@ -245,7 +245,7 @@ class HuggingfaceComplete(LLMGenerator):
         from transformers import AutoModelForCausalLM, AutoTokenizer
         import torch
         super().__init__(model)
-        self.hf_model = AutoModelForCausalLM.from_pretrained(model.name, device_map="cuda", torch_dtype=torch.bfloat16, cache_dir="/runs/cache")
+        self.hf_model = AutoModelForCausalLM.from_pretrained(model.name, device_map="cuda", torch_dtype=torch.bfloat16)
         if model.tokenizer:
             self.hf_tokenizer = AutoTokenizer.from_pretrained(model.tokenizer)
         else:
@@ -275,7 +275,7 @@ class HuggingfaceInfill(LLMGenerator):
         from transformers import AutoModelForCausalLM, AutoTokenizer
         import torch
         super().__init__(model)
-        self.hf_model = AutoModelForCausalLM.from_pretrained(model.name, device_map="cuda", torch_dtype=torch.bfloat16, cache_dir="/runs/cache")
+        self.hf_model = AutoModelForCausalLM.from_pretrained(model.name, device_map="cuda", torch_dtype=torch.bfloat16)
         if model.tokenizer:
             self.hf_tokenizer = AutoTokenizer.from_pretrained(model.tokenizer)
         else:
