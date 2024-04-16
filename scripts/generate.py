@@ -94,13 +94,23 @@ class LLMGenerator:
         self.compiled = 0
         self.samples = []
 
+    def batch_solve(self, evals_samples):
+        programs = []
+        for evals in evals_samples:
+            programs.append([self.solve(e, k) for e,k in evals])
+        return programs
+
     def eval(self):
-        for e in self.evals:
+        evals_samples = [[(e,k) for e in self.evals] for k in range(self.model.samples_per_task)]
+        programs = self.batch_solve(evals_samples)
+
+        for i, e in enumerate(self.evals):
+            
             name = f"{e['entry_point']}"
             path = os.path.join(self.solutions_path, f"{e['entry_point']}.cbl")
             for k in range(self.model.samples_per_task):
                 try:
-                    program = self.solve(e, k)
+                    program = programs[k][i]
 
                     self.samples.append(
                         {"sample_id": k, "task_id": e["task_id"], "completion": program}
@@ -245,7 +255,7 @@ class HuggingfaceComplete(LLMGenerator):
         from transformers import AutoModelForCausalLM, AutoTokenizer
         import torch
         super().__init__(model)
-        self.hf_model = AutoModelForCausalLM.from_pretrained(model.name, device_map="cuda", torch_dtype=torch.bfloat16)
+        self.hf_model = AutoModelForCausalLM.from_pretrained(model.name, device_map="cuda", torch_dtype=torch.bfloat16, cache_dir="/runs/cache")
         if model.tokenizer:
             self.hf_tokenizer = AutoTokenizer.from_pretrained(model.tokenizer)
         else:
@@ -275,7 +285,7 @@ class HuggingfaceInfill(LLMGenerator):
         from transformers import AutoModelForCausalLM, AutoTokenizer
         import torch
         super().__init__(model)
-        self.hf_model = AutoModelForCausalLM.from_pretrained(model.name, device_map="cuda", torch_dtype=torch.bfloat16)
+        self.hf_model = AutoModelForCausalLM.from_pretrained(model.name, device_map="cuda", torch_dtype=torch.bfloat16, cache_dir="/runs/cache")
         if model.tokenizer:
             self.hf_tokenizer = AutoTokenizer.from_pretrained(model.tokenizer)
         else:
@@ -296,6 +306,90 @@ class HuggingfaceInfill(LLMGenerator):
 
         program = f"{prefix}{working_storage}{suffix}{procedure}"
         return program
+
+    def get_prefix_suffix(self, src: str):
+        """
+        Split the prompt into prefix and suffix strings
+        """
+        lines = src.split("\n")
+        for i, line in enumerate(lines):
+            if line.strip().startswith("DATA DIVISION."):
+                data_division = i
+            if line.strip().startswith("LINKAGE SECTION."):
+                linkage_section = i
+            if line.strip().startswith(
+                "* Complete the WORKING-STORAGE SECTION and the PROCEDURE DIVISION"
+            ):
+                complete = i
+
+        prefix = "\n".join(lines[: data_division + 1]) + "\n"
+        store = "      * Store the result in the RESULT variable and mark the end of your program with END PROGRAM\n"
+        suffix = "\n".join(lines[linkage_section:complete] + [store])
+        return prefix, suffix
+    
+class VLLMInfill(LLMGenerator):
+    """
+    Infills WORKING-STORAGE SECTION then completes PROCEDURE DIVISION with local Huggingface model using VLLM
+
+    Infilling strategy described here: https://bloop.ai/blog/evaluating-llms-on-cobol
+    """
+
+    def __init__(self, model: Model):
+        super().__init__(model)
+        from vllm import LLM
+        
+
+        self.llm = LLM(
+            model=model.name,
+            tokenizer=model.tokenizer,
+            gpu_memory_utilization=0.95,
+            enforce_eager=True,
+            max_model_len=1024 * 4,
+            max_num_batched_tokens=2048 * 2,
+            seed=0,
+            #download_dir="/runs/cache",
+        )
+        
+        self.prefix_token = model.prefix_token
+        self.middle_token = model.middle_token
+        self.suffix_token = model.suffix_token
+
+    def batch_solve(self, evals):
+        from vllm.sampling_params import SamplingParams
+        inputs = []
+        for _, ev in enumerate(evals):
+            prompts = []
+            for e,_ in ev:
+
+                prefix, suffix = self.get_prefix_suffix(e["prompt"])
+                prompt = f"{self.prefix_token}{prefix}{self.suffix_token}{suffix}"
+                prompts.append(prompt)
+            inputs.append(prompts)
+            
+        
+
+
+        sampling_params = SamplingParams(
+            repetition_penalty=1.1,
+            temperature=0.0,
+            top_p=0.95,
+            top_k=50,
+            max_tokens=1000,
+            stop=[]
+        )
+        results = [[i.outputs[0].text for i in self.llm.generate(input, sampling_params)] for input in inputs]
+        
+        def program_from_solution(sol, prompt):
+            prefix, suffix = self.get_prefix_suffix(prompt)
+            try:
+                procedure, working_storage = sol.split(self.middle_token)
+            except:
+                procedure, working_storage = sol, "       WORKING-STORAGE SECTION.\n\n"
+
+            program = f"{prefix}{working_storage}{suffix}{procedure}"
+            return program
+        results = [[program_from_solution(sol, e[0]["prompt"]) for sol, e in zip(results_k, evals_k)] for results_k, evals_k in zip(results, evals)]
+        return results
 
     def get_prefix_suffix(self, src: str):
         """
