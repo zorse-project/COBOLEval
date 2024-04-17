@@ -228,11 +228,13 @@ class JsonProgram(LLMGenerator):
     
 @memory.cache
 def hf_complete(prompt, model, tokenizer, max_length=1024, eos_token=None) -> str:
-    inputs = tokenizer.encode(prompt, return_tensors="pt", add_special_tokens=False).to("cuda")
+    inputs = tokenizer.encode(prompt, return_tensors="pt", add_special_tokens=True).to("cuda")
     outputs = model.generate(inputs, max_new_tokens=max_length, use_cache=True, do_sample=False, repetition_penalty=1.1)
     text_output = tokenizer.decode(outputs[0], skip_special_tokens=False)[len(prompt):]
     if eos_token and text_output.endswith(eos_token):
         text_output = text_output[: -len(eos_token)]
+    if text_output.startswith(tokenizer.bos_token):
+        text_output = text_output[len(tokenizer.bos_token):]
     return text_output
     
 
