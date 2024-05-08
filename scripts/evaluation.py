@@ -62,7 +62,9 @@ def parse(result, result_type):
 
 
 def parse_bool(res: str) -> bool:
-    return res.strip() in {"1": True, "0": False}
+    if res.strip() == "1":
+        return True
+    return False
 
 
 def parse_int(res: str) -> int:
