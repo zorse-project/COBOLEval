@@ -25,7 +25,7 @@ def find_index_or_last(lst, k):
         return len(lst) - 1
 
 
-def parse(result, result_type):
+def parse(result, result_type, true):
     """
     Parse COBOL value according to Python type
     """
@@ -45,15 +45,15 @@ def parse(result, result_type):
 
             case {"List": "Int"}:
                 parsed_result = [parse_int(x) for x in result]
-                return parsed_result[: find_index_or_last(parsed_result, 0)]
+                return parsed_result[: len(true)]
 
             case {"List": "Float"}:
                 parsed_result = [parse_float(x) for x in result]
-                return parsed_result[: find_index_or_last(parsed_result, 0.0)]
+                return parsed_result[: len(true)]
 
             case {"List": "String"}:
                 parsed_result = [parse_string(x) for x in result]
-                return parsed_result[: find_index_or_last(parsed_result, "")]
+                return parsed_result[: len(true)]
 
             case _:
                 raise ParseError("Invalid result type: ", result_type)
@@ -62,7 +62,9 @@ def parse(result, result_type):
 
 
 def parse_bool(res: str) -> bool:
-    return res.strip() in {"1": True, "0": False}
+    if res.strip() == "1":
+        return True
+    return False
 
 
 def parse_int(res: str) -> int:
@@ -155,7 +157,7 @@ def check_correctness(problem: Dict, completion: str, base_path: str) -> Dict:
 
                 if result:
                     type_ = test["result"]["type_"]
-                    parsed_result = parse(result, type_)
+                    parsed_result = parse(result, type_, true)
                     passed[-1] = is_equal(type_, parsed_result, true)
                     results[-1] = parsed_result
         except Exception as e:

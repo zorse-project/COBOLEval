@@ -224,14 +224,24 @@ impl PyTest {
 
     fn to_write_logic(&self, function: &PyFunction, linkage: &str) -> Result<String> {
         match &function.return_type {
-            PyType::List(_) => {
+            PyType::List(t) => {
                 let index = match_result_index(linkage)?;
-                Ok(format!(
-                    r#"       PERFORM VARYING N{index} FROM 1 BY 1 UNTIL N{index} > 100
+
+                return match t.as_ref() {
+                    PyType::Float => Ok(format!(
+                        r#"       PERFORM VARYING N{index} FROM 1 BY 1 UNTIL N{index} > 100
+           MOVE RESULT (N{index}) TO FLOAT-REPR
+           STRING DECIMAL-PART "." FRACTIONAL-PART INTO OUTPUT-RECORD
+           WRITE OUTPUT-RECORD
+       END-PERFORM"#
+                    )),
+                    _ => Ok(format!(
+                        r#"       PERFORM VARYING N{index} FROM 1 BY 1 UNTIL N{index} > 100
            MOVE RESULT (N{index}) TO OUTPUT-RECORD
            WRITE OUTPUT-RECORD
        END-PERFORM"#
-                ))
+                    )),
+                };
             }
             PyType::Float => Ok(r#"       MOVE RESULT TO FLOAT-REPR
        STRING DECIMAL-PART "." FRACTIONAL-PART INTO OUTPUT-RECORD
@@ -242,7 +252,6 @@ impl PyTest {
             }
         }
     }
-
     fn to_data_moves(&self, function: &PyFunction) -> String {
         function
             .args
@@ -456,6 +465,50 @@ fn parse_test(
     Ok(tests)
 }
 
+fn parse_arg_list_length(parser: &mut Parser, src: &str) -> Option<usize> {
+    let tree = parser.parse(src, None)?;
+    let root_node = tree.root_node();
+
+    let query = tree_sitter::Query::new(
+        tree_sitter_python::language(),
+        "(
+        (assert_statement
+            (comparison_operator
+      (call
+        function: (identifier)
+        arguments: (argument_list
+                    (list) @arg-list
+                   )
+      )
+    )
+  )
+)",
+    )
+    .ok()?;
+    let mut query_cursor = tree_sitter::QueryCursor::new();
+    let mut matches = query_cursor.captures(&query, root_node, src.as_bytes());
+    if let Some((m, _)) = matches.next() {
+        if let Some(arg_list_node) = m.captures.iter().next() {
+            let arg_list = arg_list_node.node;
+            return Some(arg_list.named_child_count());
+        }
+    }
+    None
+}
+
+fn replace_array_length(src: &str, len: usize) -> String {
+    src.lines()
+        .map(|line| {
+            if line.contains("OCCURS 100 TIMES INDEXED BY") && !line.contains("RESULT") {
+                line.replace("100", &len.to_string())
+            } else {
+                line.to_string()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 pub fn prompt(program_name: &str, program_description: &str, linkage_vars: &str) -> String {
     format!(
         r#"       IDENTIFICATION DIVISION.
@@ -562,7 +615,7 @@ fn main() -> Result<()> {
                 let function = f.into_iter().next().unwrap();
 
                 match function.to_cobol() {
-                    Ok(prompt) => {
+                    Ok(mut prompt) => {
                         let tests = parse_test(
                             &mut parser,
                             &eval.test,
@@ -570,7 +623,7 @@ fn main() -> Result<()> {
                             &function.return_type,
                         );
 
-                        let valid_tests = match tests {
+                        let mut valid_tests = match tests {
                             Ok(ts) => ts
                                 .into_iter()
                                 .filter_map(|t| {
@@ -598,6 +651,15 @@ fn main() -> Result<()> {
                         if valid_tests.is_empty() {
                             println!("No valid tests for: {}\n", eval.entry_point);
                             continue;
+                        }
+
+                        // Find number of elements in list arguments and amend types
+                        let arg_list_length = parse_arg_list_length(&mut parser, &eval.test);
+                        if let Some(len) = arg_list_length {
+                            prompt = replace_array_length(&prompt, len);
+                            for test in valid_tests.iter_mut() {
+                                test.test = replace_array_length(&test.test, len);
+                            }
                         }
 
                         cobol_evals.push(CobolEval {
